@@ -1,20 +1,17 @@
 import cv2 as cv
 from PIL import Image
 from transformers import pipeline
-from transformers import DetrImageProcessor, DetrForObjectDetection
 import torch
-from time import perf_counter
-
-pipe = pipeline("object-detection", model="facebook/detr-resnet-50")
 
 cap = cv.VideoCapture(0)
 if not cap.isOpened():
     print("Cannot open camera")
     exit()
 
-# Load the model and processor once
-processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50", revision="no_timm")
-model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50", revision="no_timm").to("cuda")
+device = 0 if torch.cuda.is_available() else -1
+detection_model_pipeline = pipeline("object-detection", model="facebook/detr-resnet-50", device=device)
+image_captioning_model_pipeline = pipeline("image-to-text", model="Salesforce/blip-image-captioning-large", device=device)
+
 
 while True:
     # Capture frame-by-frame
@@ -31,21 +28,20 @@ while True:
     
     # Convert the frame to PIL Image
     pil_frame = Image.fromarray(frame)
-    t = perf_counter()
     
-    inputs = processor(images=pil_frame, return_tensors="pt").to("cuda")
-    outputs = model(**inputs)
-    print(f"Time to run inference: {perf_counter() - t}")
+    # Perform object detection
+    result = detection_model_pipeline(pil_frame, batch_size=8)
 
-    # convert outputs (bounding boxes and class logits) to COCO API
-    # let's only keep detections with score > 0.9
-    target_sizes = torch.tensor([pil_frame.size[::-1]])
-    results = processor.post_process_object_detection(outputs, target_sizes=target_sizes, threshold=0.9)[0]
-
-    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-        # Display a rectangle around the detected object
-        cv.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
-        cv.putText(frame, model.config.id2label[label.item()], (int(box[0]), int(box[1])), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv.LINE_AA)
+    # Draw the bounding boxes
+    for obj in result:
+        x0, y0, x1, y1 = obj["box"].values()
+        x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
+        cv.rectangle(frame, (x0, y0), (x1, y1), (0, 255, 0), 2)
+        cv.putText(frame, obj["label"], (x0, y0), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    
+    # Perform image captioning
+    caption = image_captioning_model_pipeline(pil_frame, batch_size=32)
+    print(caption)
     
     cv.imshow('frame', frame)
 
